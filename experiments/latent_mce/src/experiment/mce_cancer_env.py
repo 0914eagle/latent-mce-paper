@@ -105,7 +105,7 @@ Internal information (training data only): every training record has "internal_r
 Oracle lens from the answering model's internal state right before its first answer token (the question with the
 system prompt, no context), at four depths (blocks 36, 44, 52, 60 of 64). It shows what the model is representing
 before it answers; it can be noisy, repeat the question or be unrelated. Where to find it: the base agent's
-data/train.json (with the answer and rating), the meta agent's meta_agent/train.jsonl (per training question), and
+data/train.json (with the answer and rating); for the meta agent, meta_agent/train.jsonl (per training question) and
 the records of earlier iterations in the workspace (iter*_sub*/data/train.json). get_context receives only the
 question.
 """ if LATENT == "lens" else "")
