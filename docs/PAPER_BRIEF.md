@@ -15,7 +15,7 @@
 |---|---|---|
 | 1 | 이 문서 | 왜, 무엇을, 어떻게 |
 | 2 | [`METHOD_SETUP.md`](METHOD_SETUP.md) | Method / Setup 절에 그대로 옮길 설정값과 구현 파일 |
-| 3 | [`RESULTS.md`](RESULTS.md) | 지금까지 나온 모든 숫자와 그것을 만든 실험 |
+| 3 | [`RESULTS.md`](RESULTS.md) | 지금까지 나온 숫자와 그것을 만든 실험 (결과 절은 희재님과 정리) |
 | 4 | [`../README.md`](../README.md) | 코드 구조와 실행 방법 |
 | 참고 | [`../experiments/latent_mce/prereg/prereg_v4_test.md`](../experiments/latent_mce/prereg/prereg_v4_test.md) | 실험마다 미리 적은 계획과 결과 기록 (E1–E40) |
 
@@ -52,9 +52,9 @@
 - 모델은 틀린 전제를 "알고" 있어도 답에서 말하지 않는 경우가 많습니다. Qwen3-8B 점검에서 일반 힌트("전제가 틀렸다")만
   줘도 FPQ 교정이 12% → 37%로 오르고, 구체 힌트를 주면 72%까지 오릅니다. 병목은 지식보다 **언제 교정할지**였습니다.
 - 답 시작 직전의 hidden state로 만든 probe는 FPQ를 텍스트 분류기보다 잘 가립니다. 이것으로 context를 **붙일지
-  말지** 정하면(probe gate) NFP를 지키면서 FPQ 이득을 대부분 남깁니다 (§6).
+  말지** 정하면(probe gate) NFP를 지키면서 FPQ 이득을 대부분 남깁니다 (`RESULTS.md` §1).
 - 같은 질문에 답을 4번 뽑으면 FPQ의 27%는 가끔만 교정합니다. hidden state는 이런 "흔들리는 질문"을 텍스트보다
-  잘 가립니다 (dev AUC 0.79 vs 0.51, E31). 관련 연구도 "모델은 알지만 말하지 않는다"는 현상을 보고합니다 (§8).
+  잘 가립니다 (dev AUC 0.79 vs 0.51, E31). 관련 연구도 "모델은 알지만 말하지 않는다"는 현상을 보고합니다 (§7).
 
 ### 2.3 그래서 묻는 질문
 > 최적화 agent가 답 모델의 **내부 상태**를 볼 수 있으면, 출력과 점수만 볼 때보다 더 좋은 context와 context 함수를
@@ -116,7 +116,7 @@
   - AR(activation reconstructor): 글 → 그 글 앞의 activation을 예측. 먼저 학습한 뒤 고정합니다.
   - AO(activation oracle): activation → 글. AR을 보상으로 삼아 SFT와 RL(GRPO)로 학습합니다.
 - 우리는 학습된 reader(`olens_s3d_rl600`)를 고정해 씁니다. reader prompt와 설정(T 0.8, top-p 0.95, 128 토큰)은 바꾸지 않습니다.
-- 관련 공개 연구: Activation Oracles (Karvonen et al.), 개선판 (Bauer et al.), LatentQA, Patchscopes (§8).
+- 관련 공개 연구: Activation Oracles (Karvonen et al.), 개선판 (Bauer et al.), LatentQA, Patchscopes (§7).
 
 ### 4.4 probe gate (별도 방법이자 비교 분석)
 - hidden state(층 20–60, 11개 층)에 층별 로지스틱 회귀를 학습하고 평균합니다. training 문항만 씁니다.
@@ -139,33 +139,12 @@
 
 ---
 
-## 6. 지금까지의 결과 (Cancer-Myth, test macro, 높을수록 좋음)
-
-| 비교 | 결과 | 출처 |
-|---|---|---|
-| Plain → MCE (원본, 균형 fold 3개 평균) | 63.6 → **68.7** (FPQ 63.2 / NFP 74.2) | big table 계획 (10/28) |
-| fold 0: Plain / GEPA | 64.1 / 68.4 | `RESULTS.md`, E29 |
-| fold 0: 학습된 context 14개, 전부 붙임 vs **probe gate** | 65.6 vs **68.8** (label gate 상한 73.2) | E25 |
-| probe gate를 루프 안에 (5 run씩) | 69.2 vs 66.5 | E27 |
-| 우리 MCE식 루프 A(출력) vs B(+lens 변화 메모리) | 66.6 vs 68.3, 차이 +1.6 [−6.0, +9.2] | E29 |
-| 같은 비교, 고친 루프 (3 run씩) | 69.3 vs 66.0, 차이 −3.4 [−10.8, +4.1] | E35 |
-| 흔들리는 FPQ 예측 (hidden state vs 질문 글) | dev AUC 0.79 vs 0.51 | E31 |
-| latent MCE (원본 MCE + 판독 피드백) | **아직 없음** (실행 준비 완료) | `run_mce_cancer.sh` |
-
-**정직하게 써야 할 점**
-- 내부 상태가 확실히 도운 것은 **붙일지 말지(probe gate)**입니다.
-- agent에게 판독을 준 실험(E29, E35)은 아직 이득이 확인되지 않았습니다. 판독은 대부분 답이 이미 보여 주는 것을
-  반복했습니다 (같은 방향 55.6%, 반대 12.2%, 무관·불명 32%).
-- run 사이 편차가 큽니다 (같은 설정 5 run이 64.3–69.6). dev 점수가 test를 예측하지 못했습니다 (r = −0.01).
-
----
-
-## 7. 절별 쓰기 안내
+## 6. 절별 쓰기 안내
 
 | 절 | 쓸 내용 | 근거 파일 |
 |---|---|---|
 | Introduction | §2의 흐름: 출력 기반 최적화 → 상충 → 내부 상태의 추가 정보 → latent MCE | 이 문서 §2, `RESULTS.md` §1–3 |
-| Related Work | §8의 네 갈래 | §8 |
+| Related Work | §7의 네 갈래 | §7 |
 | Method | §4.1 MCE 요약 → §4.2 latent MCE (그림) → §4.3 Oracle lens → (선택) §4.4 probe gate | `METHOD_SETUP.md` §3–4, `mce_cancer_env.py` |
 | Experimental Setup | 과제·데이터·지표, 답 모델, 채점, agent, MCE 설정, 기준선 | `METHOD_SETUP.md` §1–2, §4–5 |
 | Results / Analysis | 큰 표 (task × 방법), probe gate, 판독 분석, 흔들리는 질문 | `RESULTS.md`, 표 계획 페이지 |
@@ -178,7 +157,7 @@
 
 ---
 
-## 8. 참고문헌 (분야별)
+## 7. 참고문헌 (분야별)
 
 arXiv 번호는 프로젝트 문서에서 확인한 것입니다. "(확인 필요)"는 번호를 직접 확인하지 못한 것입니다.
 
@@ -214,7 +193,7 @@ arXiv 번호는 프로젝트 문서에서 확인한 것입니다. "(확인 필�
 
 ---
 
-## 9. 어디에 무엇이 있나
+## 8. 어디에 무엇이 있나
 
 | 무엇 | 어디 |
 |---|---|
