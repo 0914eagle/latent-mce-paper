@@ -85,17 +85,52 @@
 
 ---
 
-## 4. 방법
+## 4. 방법 (Method 절 초안)
 
-### 4.1 배경: MCE (Meta Context Engineering)
-두 단계 agent 구조입니다 (Ye et al., 2026).
-- **meta agent:** 이전 반복의 skill과 점수를 보고 **skill**(작업 절차 문서)을 고칩니다.
-- **base agent:** skill을 따라 training 결과를 읽고 `context/` 파일과 `get_context` 함수를 고칩니다.
-- 반복마다 training 묶음을 답하고 채점해서 base agent에게 줍니다. validation 점수가 가장 높은 반복을 test에 씁니다.
-- 우리는 공식 코드(c4b7a7c)를 **수정 없이** 씁니다 (`experiments/latent_mce/mce_upstream`). 과제만 환경으로 등록합니다.
+논문 Method 절에 거의 그대로 옮길 수 있게 썼습니다. 기호는 이 절 안에서만 씁니다.
 
-### 4.2 latent MCE (제안 방법)
-원본 MCE와 다른 점은 **agent가 받는 피드백에 판독이 더해진다**는 것 하나입니다.
+### 4.1 문제 설정
+- 답 모델 $M$은 고정돼 있습니다. $M$은 고정 system prompt $s$ 아래에서 질문 $x$에 답합니다.
+- **context 함수** $g$는 글 $g(x)$를 돌려줍니다. 이 글은 system prompt 끝에 붙습니다. 그래서 답은
+  $y = M(s \oplus g(x),\, x)$입니다. $g(x)=\varnothing$이면 Plain prompt 그대로 답합니다.
+- 채점기 $J$는 $x$의 라벨(틀린 전제 여부)을 보고 $y$를 채점합니다. FPQ이면 정답 교정도 함께 봅니다.
+- 최적화는 training 질문에서만 $M$과 $J$를 돌릴 수 있습니다.
+- 목표는 test 점수가 가장 높은 $(g, \mathcal{C})$를 찾는 것입니다. $\mathcal{C}$는 $g$가 읽는 context 파일입니다.
+
+### 4.2 배경: Meta Context Engineering (MCE)
+- MCE(Ye et al., 2026)는 두 agent로 $(g, \mathcal{C})$를 학습합니다.
+- 반복 $k$마다 **meta agent**가 skill $\sigma_k$(작업 절차 문서)를 씁니다. 근거는 이전 skill들과 그 training·validation 점수입니다.
+- **base agent**는 $\sigma_k$를 따릅니다. 현재 묶음의 학습 기록을 읽습니다.
+  $$\mathcal{D}_k=\{(x_i,\ \ell_i,\ c_i,\ y_i,\ r_i)\}$$
+  (질문, 라벨, 정답 교정, 답, 점수). 그리고 context 파일과 $g$의 코드를 고칩니다.
+- 반복이 끝날 때마다 새 버전을 validation에서 채점하고, 가장 좋은 반복을 test에 씁니다.
+- 우리는 공식 구현(c4b7a7c)을 **수정 없이** 쓰고, 우리 과제만 환경으로 등록합니다
+  (`experiments/latent_mce/mce_upstream`, `src/experiment/mce_cancer_env.py`).
+
+### 4.3 답 모델의 내부 상태 읽기
+- training 질문 $x$마다 $M$을 Plain prompt(context 없음)로 마지막 prompt 토큰까지 실행합니다. 답은 생성하지 않습니다.
+- 깊이 $\ell \in \{36, 44, 52, 60\}$(전체 64층)의 block 출력 $h_\ell(x)$를 가져옵니다.
+- 고정된 activation verbalizer인 **Oracle lens** $O$가 각 상태를 짧은 글로 풉니다.
+  $$z(x) = \{\,O(h_\ell(x))\,\}_{\ell}$$
+- 질문마다 한 번만 읽으므로 $z(x)$는 모든 run에서 같습니다.
+
+**Oracle lens.**
+- Qwen3.6-27B 위의 LoRA reader로 학습한 도구입니다 (내부 프로젝트 `oracle-lens`, 공개 논문 없음).
+  - AR(activation reconstructor): 글 → 그 글 앞의 activation을 예측합니다. 먼저 학습한 뒤 고정합니다.
+  - AO(activation oracle): activation → 글. 정규화한 상태($16000\cdot h/\lVert h\rVert$)를 reader prompt의 한 자리에 넣고 글을 생성합니다. AR을 보상으로 삼아 SFT와 RL(GRPO)로 학습합니다.
+- 우리는 학습된 reader(`olens_s3d_rl600`)를 고정해 씁니다. reader prompt와 생성 설정(T 0.8, top-p 0.95, 128 토큰)은 바꾸지 않습니다.
+- 관련 공개 연구: Activation Oracles (Karvonen et al.), 개선판 (Bauer et al.), LatentQA, Patchscopes (§7).
+
+### 4.4 Latent MCE
+- latent MCE는 **agent가 읽는 것**만 바꿉니다. base agent의 학습 기록은 이렇게 됩니다.
+  $$\mathcal{D}^{\text{lat}}_k=\{(x_i,\ \ell_i,\ c_i,\ y_i,\ r_i,\ z(x_i))\}$$
+- meta agent는 training 질문마다 $z(x)$를 받고(`meta_agent/train.jsonl`), 이전 반복의 기록이 어디 있는지 안내도 받습니다.
+- interface는 $g(x)$ 그대로입니다. 내부 상태는 **최적화 피드백으로만** 씁니다. 그래서 학습된 context 함수와 추론 비용은 MCE와 같습니다.
+- 출력은 모델이 *무엇을 답했는지* 보여 줍니다. 판독은 모델이 *답하기 전에 무엇을 표상했는지* 보여 줍니다.
+- 이것은 수정 방법이 다른 실패들을 agent가 가르도록 돕기 위한 설계입니다.
+  - 모델이 교정을 갖고 있지만 말하지 않음 → 문구
+  - 교정이 없음 → 지식
+  - 정상 질문을 이미 틀린 것으로 읽음 → 붙이는 범위를 좁힘
 
 ```
 (1) 판독 만들기 (training 질문마다 한 번, 답 생성 없음)
@@ -106,22 +141,31 @@
     meta agent: meta_agent/train.jsonl의 질문마다 internal_reading, 이전 반복 기록의 위치 안내
 (3) 나머지는 원본 MCE와 같음. get_context(question)도 같음 → test 때 내부 정보를 쓰지 않음
 ```
-- 판독은 Luna로 요약하지 않고 원문 그대로 줍니다. 해석은 agent가 합니다.
-- validation·test 질문은 lens로 읽지 않습니다. 판독은 학습 피드백일 뿐입니다.
-- 구현: `src/experiment/mce_cancer_env.py` (`MCE_LATENT=lens`), 실행: `run_mce_cancer.sh`.
+
+### 4.5 설계 선택
+1. 판독은 **원문 그대로** 줍니다. 다른 모델이 요약하지 않으므로, 효과가 있다면 내부 신호와 agent 자신의 해석에서 나온 것입니다.
+2. **training 질문만** 읽습니다. validation과 test 질문은 읽지 않으므로 reader를 통한 정보 누출이 없습니다.
+3. 두 arm은 루프, prompt, 예산(반복 수, 묶음 크기, rollout 수), 선택 규칙이 모두 같습니다. 차이는 $z$ 하나뿐입니다.
+4. agent가 판독을 어디서 찾는지는 과제 설명(task instruction)에 적습니다. 원본 MCE에서 과제 설명은 base와 meta prompt에 모두 들어갑니다.
+
+### 4.6 알고리즘 (latent MCE)
+```
+모든 training x에 대해 z(x)를 미리 계산                        # Oracle lens, 한 번
+for k = 1..K:
+    σ_k ← MetaAgent(이력, 점수, {x, z(x)})                     # skill
+    for 각 묶음 B ⊂ train:
+        B에서 g_k 실행 → 답 y, 점수 r
+        (g, 𝒞) ← BaseAgent(σ_k, {(x, ℓ, c, y, r, z(x))}_B)     # context 파일과 g 수정
+    validation에서 g_k 채점
+validation 최고 (g, 𝒞)를 반환
+```
+- 구현: `src/experiment/mce_cancer_env.py` (`MCE_LATENT=lens`), 판독 사전 계산과 실행: `run_mce_cancer.sh`.
 - 그림 초안: `~/gepa_explainer/latent_mce_method_figure_2026-10-28.html` (서버).
 
-### 4.3 Oracle lens
-- Qwen3.6-27B 위의 LoRA reader 두 개로 학습한 도구입니다 (내부 프로젝트 `oracle-lens`, 공개 논문 없음).
-  - AR(activation reconstructor): 글 → 그 글 앞의 activation을 예측. 먼저 학습한 뒤 고정합니다.
-  - AO(activation oracle): activation → 글. AR을 보상으로 삼아 SFT와 RL(GRPO)로 학습합니다.
-- 우리는 학습된 reader(`olens_s3d_rl600`)를 고정해 씁니다. reader prompt와 설정(T 0.8, top-p 0.95, 128 토큰)은 바꾸지 않습니다.
-- 관련 공개 연구: Activation Oracles (Karvonen et al.), 개선판 (Bauer et al.), LatentQA, Patchscopes (§7).
-
-### 4.4 probe gate (별도 방법이자 비교 분석)
+### 4.7 probe gate (latent MCE와 별개)
 - hidden state(층 20–60, 11개 층)에 층별 로지스틱 회귀를 학습하고 평균합니다. training 문항만 씁니다.
 - test 때 `p_fpq ≥ 0.5`인 질문에만 학습된 context를 붙입니다. 나머지는 Plain입니다.
-- latent MCE에는 들어가지 않습니다. 논문에서는 "내부 상태가 붙일지 말지를 정할 수 있다"는 C2 근거로 씁니다.
+- latent MCE에는 들어가지 않습니다. Method에 넣을지, 분석으로 뺄지는 희재님과 정합니다.
 
 ---
 
@@ -145,14 +189,12 @@
 |---|---|---|
 | Introduction | §2의 흐름: 출력 기반 최적화 → 상충 → 내부 상태의 추가 정보 → latent MCE | 이 문서 §2, `RESULTS.md` §1–3 |
 | Related Work | §7의 네 갈래 | §7 |
-| Method | §4.1 MCE 요약 → §4.2 latent MCE (그림) → §4.3 Oracle lens → (선택) §4.4 probe gate | `METHOD_SETUP.md` §3–4, `mce_cancer_env.py` |
+| Method | §4.1 문제 설정 → §4.2 MCE → §4.3 내부 상태와 Oracle lens → §4.4 latent MCE (그림) → §4.5 설계 선택 → §4.6 알고리즘 | 이 문서 §4, `METHOD_SETUP.md` §3–4, `mce_cancer_env.py` |
 | Experimental Setup | 과제·데이터·지표, 답 모델, 채점, agent, MCE 설정, 기준선 | `METHOD_SETUP.md` §1–2, §4–5 |
-| Results / Analysis | 큰 표 (task × 방법), probe gate, 판독 분석, 흔들리는 질문 | `RESULTS.md`, 표 계획 페이지 |
 | Limitations | 편차, dev 크기, LLM 채점, vLLM 비결정성, 판독 잡음 | `METHOD_SETUP.md` §6 |
 
 **주의**
 - 설정이 다른 숫자를 한 표에 섞지 않습니다 (thinking on/off, 채점기, 예산, 분할).
-- "lens가 도왔다"고 쓰지 않습니다. 현재 근거로는 "내부 상태가 붙일지 말지를 정하는 데 도왔다"까지입니다.
 - 원본 MCE는 "수정 없이 사용"이라고 씁니다. 우리가 바꾼 것은 환경(과제)과 피드백 내용뿐입니다.
 
 ---
