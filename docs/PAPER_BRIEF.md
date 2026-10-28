@@ -99,7 +99,7 @@
 
 ### 4.2 배경: Meta Context Engineering (MCE)
 - MCE(Ye et al., 2026)는 두 agent로 $(g, \mathcal{C})$를 학습합니다.
-- 반복 $k$마다 **meta agent**가 skill $\sigma_k$(작업 절차 문서)를 씁니다. 근거는 이전 skill들과 그 training·validation 점수입니다.
+- 반복 $k$마다 **meta agent**가 skill $\sigma_k$(작업 절차 문서)를 씁니다. 근거는 **skill history** $\mathcal{H}_k=\{(\sigma_j,\ \text{train score}_j,\ \text{val score}_j)\}_{j<k}$, 즉 이전 skill들과 그 점수입니다 (원본 MCE의 skill database).
 - **base agent**는 $\sigma_k$를 따릅니다. 현재 묶음의 학습 기록을 읽습니다.
   $$\mathcal{D}_k=\{(x_i,\ \ell_i,\ c_i,\ y_i,\ r_i)\}$$
   (질문, 라벨, 정답 교정, 답, 점수). 그리고 context 파일과 $g$의 코드를 고칩니다.
@@ -152,7 +152,7 @@
 ```
 모든 training x에 대해 z(x)를 미리 계산                        # Oracle lens, 한 번
 for k = 1..K:
-    σ_k ← MetaAgent(이력, 점수, {x, z(x)})                     # skill
+    σ_k ← MetaAgent(𝓗_k, {x, ℓ, c, z(x)})                     # skill; 𝓗_k = 이전 skill과 점수
     for 각 묶음 B ⊂ train:
         B에서 g_k 실행 → 답 y, 점수 r
         (g, 𝒞) ← BaseAgent(σ_k, {(x, ℓ, c, y, r, z(x))}_B)     # context 파일과 g 수정
