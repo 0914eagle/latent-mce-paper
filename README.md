@@ -8,6 +8,7 @@ This repository is a curated subset of the project repository (private, `JakeFRC
 commit `320ec0f`). It holds only what the paper's method and setup need. Results data, model weights and the private
 judge code are not included (see "External pieces").
 
+- **Start here (co-authors, Korean):** [`docs/PAPER_BRIEF.md`](docs/PAPER_BRIEF.md) — why, what, method, results, references, how to write each section
 - **Method and setup for the paper:** [`docs/METHOD_SETUP.md`](docs/METHOD_SETUP.md)
 - **All results so far, with the experiment that produced each number:** [`docs/RESULTS.md`](docs/RESULTS.md)
 - **Pre-registrations and result notes of every stage (E1–E40):** [`experiments/latent_mce/prereg/prereg_v4_test.md`](experiments/latent_mce/prereg/prereg_v4_test.md)
