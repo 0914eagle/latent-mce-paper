@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Original MCE (mce_upstream, unchanged) on Cancer-Myth, the balanced folds (data/fpq/cancer_myth_balanced_splits.json):
-# MCE (MCE_LATENT=none) vs latent MCE (MCE_LATENT=lens: get_context(question, latent) and the Oracle-lens reading in the
-# training records). Paper settings: 5 iterations (epochs), training batch 50; all 100 training rows (50 FPQ / 50 NFP;
+# MCE (MCE_LATENT=none) vs latent MCE (MCE_LATENT=lens: the same get_context(question); the Oracle-lens reading of each
+# training question is in the base agent's training records and the meta agent's meta_agent/train.jsonl). Paper settings: 5 iterations (epochs), training batch 50; all 100 training rows (50 FPQ / 50 NFP;
 # TRAIN_LIMIT), validation 96 (48 / 48), test = the fold's test (241-242), as the balanced GEPA runs.
 # Test: Base (no context; shared by both arms) and the best iteration by validation accuracy of each arm.
 # Servers (start before; see docs/ONBOARDING.md section 4):
@@ -11,7 +11,7 @@
 #       (--default-chat-template-kwargs '{"enable_thinking": false}'), max 2048 new tokens as every latent_mce run
 #       (--override-generation-config '{"max_new_tokens": 2048}'); one port per fold in GEN_PORTS.
 # Usage: GEN_PORTS=8802,8803,8804 [TRAIN_LIMIT=100] [FOLDS="0 1 2"] [ARMS="none lens"] experiments/latent_mce/run_mce_cancer.sh [lens]
-#   "lens" runs step 1 (read every question once on LENS_URL) and exits.
+#   "lens" runs step 1 (read every training question once on LENS_URL, write fold<k>_train_lens.jsonl) and exits.
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd); X=$R/experiments/latent_mce; U=$X/mce_upstream; PY=/data2/heejae/uv/mce/bin/python
 D=$X/results/data/mce_cancer; LOG=$X/results/logs/mce_cancer; mkdir -p $LOG
@@ -26,7 +26,7 @@ ev() { # fold port arm iter_dir tag
 run() { # fold port arm
   w=$D/fold$1_$3
   MCE_LATENT=$3 GENERATOR_API_BASE=http://127.0.0.1:$2/v1 $PY $X/src/experiment/run_mce_cancer.py main --workspace $w --env cancer_myth \
-    --train-data $D/fold$1_train.jsonl --val-data $D/fold$1_val.jsonl --iterations 5 --train-limit $TL --val-limit 1000 \
+    --train-data $D/fold$1_train$([ $3 = lens ] && echo _lens).jsonl --val-data $D/fold$1_val.jsonl --iterations 5 --train-limit $TL --val-limit 1000 \
     --train-batch-size 50 --model qwen36-27b --log-dir $LOG/fold$1_$3 > $LOG/fold$1_$3.log 2>&1
   ev $1 $2 $3 "$(best $LOG/fold$1_$3.log $w)" $3; }
 for f in ${FOLDS:-0 1 2}; do p=${P[$f % ${#P[@]}]}

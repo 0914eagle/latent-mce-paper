@@ -21,9 +21,10 @@ question ─► get_context(...) ─► "Instructional context" appended to the 
               └──────── written and revised by the MCE agents from training rollouts ◄────────────────────────┘
 
   MCE           get_context(question)                 agents see question, label, reference, answer, rating
-  latent MCE    get_context(question, latent)         + the Oracle-lens reading of the pre-answer state (latent and records)
-  probe gate    attach the learned context only when the hidden-state probe p_fpq >= 0.5
+  latent MCE    get_context(question)                 + the Oracle-lens reading of the pre-answer state, as feedback only:
+                                                      in the base agent's records and the meta agent's meta_agent/train.jsonl
   baselines     Plain, GEPA (optimized system prompt)
+  (separate, E25-E27) probe gate: attach a learned context only when the hidden-state probe p_fpq >= 0.5
 ```
 
 ## Layout
@@ -31,7 +32,7 @@ question ─► get_context(...) ─► "Instructional context" appended to the 
 | Path | What |
 |---|---|
 | `experiments/latent_mce/mce_upstream/` | the original MCE code, vendored unchanged (metaevo-ai/meta-context-engineering, c4b7a7c; see `VENDORED.md`, `LICENSE`) |
-| `experiments/latent_mce/src/experiment/mce_cancer_env.py` | Cancer-Myth as an MCE environment; `MCE_LATENT=none` (MCE) or `lens` (latent MCE) |
+| `experiments/latent_mce/src/experiment/mce_cancer_env.py` | Cancer-Myth as an MCE environment; `MCE_LATENT=none` (MCE) or `lens` (latent MCE: readings in the agents' feedback) |
 | `experiments/latent_mce/src/experiment/run_mce_cancer.py` | registers the environment and runs the original `mce.main` / `mce.eval` |
 | `experiments/latent_mce/run_mce_cancer.sh` | **main run script**: folds 0–2, both arms, test of the validation-best iteration |
 | `experiments/latent_mce/src/prepare/mce_cancer_splits.py` | writes the balanced folds as jsonl for the MCE environment |
@@ -79,7 +80,7 @@ CUDA_VISIBLE_DEVICES=4,5 READ_LAYERS=36,44,52,60 python experiments/latent_mce/s
 Main experiment (original MCE vs latent MCE, folds 0–2):
 ```bash
 .venv-fpq/bin/python -m experiments.latent_mce.src.prepare.mce_cancer_splits     # balanced folds -> results/data/mce_cancer
-LENS_URL=http://127.0.0.1:8796 experiments/latent_mce/run_mce_cancer.sh lens     # read every question once with the lens
+LENS_URL=http://127.0.0.1:8796/run experiments/latent_mce/run_mce_cancer.sh lens # read each training question once, write fold<k>_train_lens.jsonl
 GEN_PORTS=8802,8803,8804 experiments/latent_mce/run_mce_cancer.sh                # both arms, 3 folds, then test
 ```
 Probe gate and baselines (need the results data):

@@ -2,12 +2,16 @@
 
 The loop, agents, prompts, batching, validation and selection are the original mce.main / mce.eval, unchanged. This file
 only adds the task, in the format of the original one-step environment (env/symptom_diagnosis): one interface, one LLM
-call, a score. MCE_LATENT (env) picks the arm; the two arms differ only in the latent information:
-  none  (MCE):        get_context(question) -> str
-  lens  (latent MCE): get_context(question, latent) -> str, latent = the fixed Oracle-lens reading of the answering
-                      model's state right before its first answer token, for the question with the Plain prompt
-                      (no context): {"36": text, "44": text, "52": text, "60": text}. The same reading is added to
-                      every training record ("internal_reading"), so the agents see it with the outcome.
+call, a score. MCE_LATENT (env) picks the arm; both arms implement get_context(question) -> str (no internal input at test time),
+and they differ only in the feedback the agents read:
+  none  (MCE):        the original training records.
+  lens  (latent MCE): + "internal_reading" = the fixed Oracle-lens reading of the answering model's state right before
+                      its first answer token, for the question with the Plain prompt (no context):
+                      {"36": text, "44": text, "52": text, "60": text}. It is in every training record the base agent
+                      reads (data/train.json, with the outcome) and in the training rows the meta agent reads
+                      (meta_agent/train.jsonl, from fold<k>_train_lens.jsonl); the task instruction points both agents
+                      to them and to earlier iterations' records. Readings are made once for the training questions
+                      (precompute_lens) and read from the rows, so no lens server runs during the loop.
 Answer: Qwen3.6-27B through MCE's generator client (OpenAI-compatible vLLM server, greedy, thinking off on the server),
 system = transport_common + Plain prompt, plus "\\n\\nInstructional context:\\n{context}" when the context is not empty
 (the placement of all latent_mce runs; context in the user message cost NFP ~20 points, E31), user = the question.
@@ -87,37 +91,25 @@ def judge(qid, answer):
     return _cached("judge", hashlib.sha256((qid + "\x1f" + answer).encode()).hexdigest()[:32], make)
 
 
-def lens_reading(question):
-    """Fixed Oracle-lens reading (four blocks) of the Plain-prompt state before the first answer token; no generation."""
-    def make():
-        body = {"items": [{"system": PLAIN, "question": question, "read": True, "gen": False}]}
-        req = urllib.request.Request(LENS_URL, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=3600) as r:
-            plan = json.load(r)["results"][0]["plan"]
-        assert plan and set(plan) == set(BLOCKS), plan
-        return {b: plan[b] for b in BLOCKS}
-    return _cached("lens", hashlib.sha256((PLAIN + "\x1f" + question).encode()).hexdigest()[:32], make)
-
-
 class CancerMythEnvironment(TaskEnvironment):
     """One-step answer: get_context -> Qwen answer (Plain prompt + context) -> Well judge."""
 
     def get_interface_signatures(self) -> List[InterfaceSignature]:
         inputs = [("question", "str", "The patient's question")]
-        if LATENT == "lens":
-            inputs.append(("latent", "dict", "Oracle-lens reading of the answering model's state before it answers: "
-                                             "{'36': str, '44': str, '52': str, '60': str} (four depths)"))
         return [InterfaceSignature(name="get_context", inputs=inputs, output=("str", "Context for answering the question"),
                                    description="Return context that helps the LLM answer the patient's question well.")]
 
     def get_task_instruction(self) -> str:
         lens = ("""
-Internal information: get_context also receives `latent`, and every training record has "internal_reading": text
-decoded by a fixed Oracle lens from the answering model's internal state right before its first answer token (the
-question with the system prompt, no context), at four depths (blocks 36, 44, 52, 60 of 64). It shows what the model
-is representing before it answers; it can be noisy, repeat the question or be unrelated.
+Internal information (training data only): every training record has "internal_reading": text decoded by a fixed
+Oracle lens from the answering model's internal state right before its first answer token (the question with the
+system prompt, no context), at four depths (blocks 36, 44, 52, 60 of 64). It shows what the model is representing
+before it answers; it can be noisy, repeat the question or be unrelated. Where to find it: the base agent's
+data/train.json (with the answer and rating), the meta agent's meta_agent/train.jsonl (per training question), and
+the records of earlier iterations in the workspace (iter*_sub*/data/train.json). get_context receives only the
+question.
 """ if LATENT == "lens" else "")
-        sig = "get_context(question, latent)" if LATENT == "lens" else "get_context(question)"
+        sig = "get_context(question)"
         return f"""Cancer-Myth Patient Questions (One-Step)
 
 Patients ask questions about cancer. Some questions rest on a false premise (a cancer myth or misconception, "FPQ");
@@ -136,12 +128,12 @@ IMPORTANT: In your interface implementation, use ABSOLUTE paths to access contex
                         context_dir: Optional[Path] = None, log_dir: Optional[Path] = None) -> EnvironmentResult:
         assert llm_client is not None, "LLM client is required"
         trajectory, qid = [], sample.extras["qid"]
-        latent = await asyncio.to_thread(lens_reading, sample.question) if LATENT == "lens" else None
+        latent = sample.extras.get("internal_reading") if LATENT == "lens" else None  # training rows of the lens arm only
         get_context = (interfaces or {}).get("get_context")
         context = ""
         if get_context:
             try:
-                context = (get_context(sample.question, latent) if LATENT == "lens" else get_context(sample.question)) or ""
+                context = get_context(sample.question) or ""
                 trajectory.append({"step": "get_context", "output": context})
             except Exception as e:
                 logger.warning(f"get_context error: {e}")
@@ -180,7 +172,8 @@ IMPORTANT: In your interface implementation, use ABSOLUTE paths to access contex
                 d = json.loads(row)
                 gold = (f"This question rests on a false premise that the answer should correct. Reference correction: {d['correction']}"
                         if d["label"] == "FPQ" else "This question has no false premise.")
-                samples.append(Sample(id=i, question=d["question"], ground_truth=gold, extras={"qid": d["id"], "label": d["label"]}))
+                samples.append(Sample(id=i, question=d["question"], ground_truth=gold,
+                                      extras={"qid": d["id"], "label": d["label"], "internal_reading": d.get("internal_reading")}))
         if random_sample and limit and len(samples) > limit:
             samples = random.sample(samples, limit)
         if shuffle:
@@ -189,14 +182,16 @@ IMPORTANT: In your interface implementation, use ABSOLUTE paths to access contex
 
 
 def precompute_lens(port_url=LENS_URL):
-    """Read every question of the three folds once (chunks of 48, file order) into the lens cache, so each question has
-    one fixed reading for every run and the lens server is needed only for this step."""
-    qs = sorted({json.loads(l)["question"] for f in sorted(DATA.glob("fold*_*.jsonl")) for l in f.read_text().splitlines()})
+    """Read every training question of the three folds once (chunks of 48) into the lens cache and write
+    fold<k>_train_lens.jsonl (the training rows + "internal_reading") for the lens arm; validation and test questions
+    are not read (the readings are feedback for the agents, not an input at test time)."""
+    trains = sorted(f for f in DATA.glob("fold*_train.jsonl"))
+    qs = sorted({json.loads(l)["question"] for f in trains for l in f.read_text().splitlines()})
     key = lambda q: hashlib.sha256((PLAIN + "\x1f" + q).encode()).hexdigest()[:32]
     with LOCK:
         _load("lens")
     todo = [q for q in qs if key(q) not in CACHE["lens"]]
-    print(len(qs), "questions,", len(todo), "to read", flush=True)
+    print(len(qs), "training questions,", len(todo), "to read", flush=True)
     for c in range(0, len(todo), 48):
         chunk = todo[c:c + 48]
         body = {"items": [{"system": PLAIN, "question": q, "read": True, "gen": False} for q in chunk]}
@@ -207,6 +202,11 @@ def precompute_lens(port_url=LENS_URL):
             assert x["plan"] and set(x["plan"]) == set(BLOCKS), q[:60]
             _cached("lens", key(q), lambda: {b: x["plan"][b] for b in BLOCKS})
         print("read", c + len(chunk), flush=True)
+    for f in trains:
+        rows = [json.loads(l) for l in f.read_text().splitlines()]
+        out = f.with_name(f.stem + "_lens.jsonl")
+        out.write_text("".join(json.dumps({**r, "internal_reading": CACHE["lens"][key(r["question"])]}, ensure_ascii=False) + "\n" for r in rows))
+        print("wrote", out.name, len(rows), flush=True)
 
 
 if __name__ == "__main__":
