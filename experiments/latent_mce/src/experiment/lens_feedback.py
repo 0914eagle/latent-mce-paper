@@ -1,5 +1,8 @@
 """Latent MCE for any MCE environment: Oracle-lens readings as training feedback only (the paper's Ours).
 
+Reader: the lens server's adapter (serve27b_lens.py OLENS_ADAPTER); LENS_TAG names it so each reader has its own cache
+(tuned lens: the dataset's adapter from experiments/lens_finetune, e.g. LENS_TAG=tuned_medcalc with OLENS_ADAPTER=
+lens_finetune/results/medcalc_split/data/adapters/s1_lr1e-4_k1_e2/step105). Set both together.
 2026-10-29 (user): the reading in each training record is of the state WITH the context that rollout actually used
 (LENS_STATE=context, the default): in every training rollout of every iteration, the answering model's input with the
 current get_context output is read by the fixed lens on a live lens server (LENS_URLS), so the agents see how their
@@ -34,7 +37,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
-CACHE = ROOT / "experiments/latent_mce/results/data/mce_cancer/lens_cache.jsonl"
+LENS_TAG = os.environ.get("LENS_TAG", "base")  # which reader made the readings: "base" (olens_s3d_rl600) or a tuned one
+CACHE = (ROOT / "experiments/latent_mce/results/data/mce_cancer/lens_cache.jsonl" if LENS_TAG == "base"
+         else ROOT / f"experiments/latent_mce/results/data/lens_feedback_cache/{LENS_TAG}.jsonl")  # one cache per reader
 BLOCKS = ("36", "44", "52", "60")
 _LOCK, _MEM = threading.Lock(), {}
 
@@ -58,7 +63,7 @@ EXTRA = [ROOT / "experiments/latent_mce/results/data/e43_medcalc/readings.jsonl"
 def _cache():
     with _LOCK:
         if not _MEM:
-            for f in EXTRA + [CACHE]:  # same reader, blocks and key; new readings go to CACHE
+            for f in (EXTRA if LENS_TAG == "base" else []) + [CACHE]:  # base-lens files only for the base reader
                 if f.exists():
                     _MEM.update({json.loads(l)["k"]: json.loads(l)["v"] for l in f.read_text().splitlines()})
         return _MEM
@@ -102,6 +107,7 @@ def read_live(system, user):
             time.sleep(10 * 2 ** attempt)
     assert plan and set(plan) == set(BLOCKS), plan
     v = {b: plan[b] for b in BLOCKS}
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
     with _LOCK, CACHE.open("a") as f:
         _MEM[k] = v
         f.write(json.dumps({"k": k, "v": v}, ensure_ascii=False) + "\n")
@@ -202,6 +208,7 @@ def precompute(dataset, train_path):
         req = urllib.request.Request(urls[(c // 24) % len(urls)], data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=24 * 3600) as r:
             res = json.load(r)["results"]
+        CACHE.parent.mkdir(parents=True, exist_ok=True)
         with _LOCK, CACHE.open("a") as f:
             for (k, _), x in zip(chunk, res):
                 assert x["plan"] and set(x["plan"]) == set(BLOCKS), k

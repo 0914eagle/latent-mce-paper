@@ -4,7 +4,9 @@
 # records carry the fixed Oracle-lens reading of each training rollout's input WITH the context it used
 # (LENS_STATE=context, default; plain = the no-context reading reused). Servers during the whole run:
 #   answers: the dataset's vLLM server (GEN_PORT);
-#   lens:    serve27b_lens.py, READ_LAYERS=36,44,52,60 (QWEN36_PATH / OLENS_ADAPTER / OLENS_SRC / LENS_MAX_MEMORY on another
+#   lens:    serve27b_lens.py, READ_LAYERS=36,44,52,60, OLENS_ADAPTER = the reader (tuned lens: the dataset's lens_finetune
+#            adapter; set LENS_TAG to its name here too, so its readings get their own cache); start that server with its OWN cache dir
+#            (serve27b_lens.py PORT CACHE_DIR caches plans by input, not by adapter) (QWEN36_PATH / OLENS_ADAPTER / OLENS_SRC / LENS_MAX_MEMORY on another
 #            server), LENS_URLS=http://127.0.0.1:<port>/run[,...].
 # Step 1 (once): STEP=precompute -> <TRAIN stem>_lens.jsonl (the meta agent's training rows with the no-context reading).
 # Usage: DATASET=<cancer_myth|hotpotqa|hover|medcalc_cot> TRAIN=... VAL=... TEST=... GEN_PORT=... LENS_URLS=... TAG=...
@@ -14,7 +16,7 @@
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd); U=$R/experiments/latent_mce/mce_upstream; X=$R/experiments/latent_mce/src/experiment
 PY=${PY:-/data2/heejae/uv/mce/bin/python}
-: "${DATASET:?}" "${TRAIN:?}" "${LENS_URLS:?}"; export LENS_URLS LENS_STATE=${LENS_STATE:-context}
+: "${DATASET:?}" "${TRAIN:?}" "${LENS_URLS:?}"; export LENS_URLS LENS_STATE=${LENS_STATE:-context} LENS_TAG=${LENS_TAG:-base}
 cd $U
 if [ "${STEP:-loop}" = precompute ]; then $PY $X/lens_feedback.py precompute $DATASET $TRAIN; exit; fi
 : "${VAL:?}" "${TEST:?}" "${GEN_PORT:?}" "${TAG:?}"
