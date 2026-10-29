@@ -98,8 +98,8 @@ counts as wrong. MCE (other server) not added yet.
   does; they miss or mis-score criteria (e.g. Wells DVT −2 item).
 
 **Do the agents use the readings?** (Ours HotpotQA and MedCalc workspaces) The readings are in the training records
-(`internal_reading`, blocks 36/44/52/60) and the agents open them (36 / 30 commands), but no context file, no
-`get_context` interface and no skill mentions them. The meta agents call them "weak diagnostic evidence" / "noisy";
+(`internal_reading`, blocks 36/44/52/60) and the agents open them (36 / 30 commands), but no context file and no
+`get_context` interface uses them; the skills mention them only as cautions. The meta agents call them "weak diagnostic evidence" / "noisy";
 both runs had the default caveat in the task text (`LENS_NOTE` unset). At test, `get_context(question)` has no
 reading, so a reading can change only how rules are written, not which rule a question gets.
 

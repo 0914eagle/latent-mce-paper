@@ -69,15 +69,14 @@
 
 ## 3. 과제와 데이터 (교수님 구성, 2026-10-28)
 
-| Task | 데이터셋 | 주 지표 | 상태 |
+| Task | 데이터셋 | 주 지표 | 질문당 답 모델 호출 |
 |---|---|---|---|
-| 1. 틀린 전제 | **Cancer-Myth** (주 실험), SynQA | macro | Cancer-Myth는 Base·MCE 완료, latent MCE 실행 준비 완료. SynQA는 데이터 확인 중 |
-| 2. 의료 계산 | MedCalc-Bench | 최종 답 정확도 | 같은 설정으로 다시 돌려야 함 |
-| 3. 검색 | HotpotQA, HoVer | EM·F1 / 근거 문서 전부 찾음 | GEPA 일부, MCE 코드만 |
+| 1. 틀린 전제 | Cancer-Myth, Syn-QA2 | FPQ·NFP(TPQ) 통과율, macro | 1 |
+| 2. 의료 계산 | MedCalc-Bench | regex 정확도, Luna 단계별 정확도 | 1 (zero-shot CoT prompt) |
+| 3. 검색 | HotpotQA, HoVer | EM / 근거 문서 전부 찾음 | 4 (GEPA 논문의 DSPy 프로그램) |
 
-- 모든 칸은 같은 설정이어야 합니다: Qwen3.6-27B, thinking off, greedy, 같은 분할, 같은 채점.
-- 표 계획과 빈 칸 목록: `~/gepa_explainer/big_table_plan_2026-10-28.html` (서버의 설명 페이지).
-- 이 저장소의 코드는 Task 1 (Cancer-Myth) 기준입니다.
+- 표의 방법(행)은 모든 task에서 같습니다: Plain / CoT / GEPA / MCE / Ours(latent MCE).
+- 같은 task 안에서는 모든 방법이 같은 답 모델 설정, 분할, 채점을 씁니다. Ours는 그 task의 MCE 행과 코드, 분할, 예산이 같습니다.
 
 **Cancer-Myth.** 환자가 묻는 암 관련 질문입니다. FPQ에는 전문가가 쓴 정답 교정(reference correction)이 있습니다.
 예: "자궁경부암이라 자궁절제술을 받아야 하니 입양 기관을 추천해 달라" → 정답 교정: 초기에는 가임력을 보존하는
@@ -87,105 +86,109 @@
 
 ## 4. 방법 (Method 절 초안)
 
-논문 Method 절에 거의 그대로 옮길 수 있게 썼습니다. 기호는 이 절 안에서만 씁니다.
+논문 Method 절에 거의 그대로 옮길 수 있게 썼습니다. task와 상관없이 같은 방법입니다. 기호는 이 절 안에서만 씁니다.
 
 ### 4.1 문제 설정
-- 답 모델 $M$은 고정돼 있습니다. $M$은 고정 system prompt $s$ 아래에서 질문 $x$에 답합니다.
-- **context 함수** $g$는 글 $g(x)$를 돌려줍니다. 이 글은 system prompt 끝에 붙습니다. 그래서 답은
-  $y = M(s \oplus g(x),\, x)$입니다. $g(x)=\varnothing$이면 Plain prompt 그대로 답합니다.
-- 채점기 $J$는 $x$의 라벨(틀린 전제 여부)을 보고 $y$를 채점합니다. FPQ이면 정답 교정도 함께 봅니다.
-- 최적화는 training 질문에서만 $M$과 $J$를 돌릴 수 있습니다.
-- 목표는 test 점수가 가장 높은 $(g, \mathcal{C})$를 찾는 것입니다. $\mathcal{C}$는 $g$가 읽는 context 파일입니다.
+- 답 모델 $M$은 고정돼 있습니다. task 프로그램은 질문 $x$ 하나에 $M$을 한 번 이상 부릅니다. $i$번째 호출의 입력을
+  $u_i(x)$라 씁니다(chat 입력: system prompt + user 메시지). 호출이 한 번인 task(Cancer-Myth, Syn-QA2, MedCalc)는
+  $i = 1$뿐이고, HotpotQA·HoVer는 DSPy 모듈 4개라 $i = 1..4$입니다.
+- **context 함수** $g_i$는 글 $g_i(x)$를 돌려줍니다. 이 글은 $i$번째 호출의 입력에 붙습니다. 호출이 한 번이면 함수도
+  $g$ 하나입니다.
+- 채점기 $J$는 출력 $y$를 그 질문의 정답 정보 $a$(라벨과 정답 교정, 정답 값과 해설, 정답, 근거 문서 등)와 비교해
+  점수 $r$을 냅니다.
+- 최적화는 training 질문에서만 $M$과 $J$를 돌릴 수 있습니다. 목표는 test 점수가 가장 높은 context 함수와 그 함수가
+  읽는 context 파일 $\mathcal{C}$를 찾는 것입니다.
 
 ### 4.2 배경: Meta Context Engineering (MCE)
-- MCE(Ye et al., 2026)는 두 agent로 $(g, \mathcal{C})$를 학습합니다.
-- 반복 $k$마다 **meta agent**가 skill $\sigma_k$(작업 절차 문서)를 씁니다. 근거는 **skill history** $\mathcal{H}_k=\{(\sigma_j,\ \text{train score}_j,\ \text{val score}_j)\}_{j<k}$, 즉 이전 skill들과 그 점수입니다 (원본 MCE의 skill database).
-- **base agent**는 $\sigma_k$를 따릅니다. 현재 묶음의 학습 기록을 읽습니다.
-  $$\mathcal{D}_k=\{(x_i,\ \ell_i,\ c_i,\ y_i,\ r_i)\}$$
-  (질문, 라벨, 정답 교정, 답, 점수). 그리고 context 파일과 $g$의 코드를 고칩니다.
+- MCE(Ye et al., 2026)는 두 agent로 context 함수와 $\mathcal{C}$를 학습합니다.
+- 반복 $k$마다 **meta agent**가 skill $\sigma_k$(작업 절차 문서)를 씁니다. 근거는 **skill history**
+  $\mathcal{H}_k=\{(\sigma_j,\ \text{train score}_j,\ \text{val score}_j)\}_{j<k}$, 즉 이전 skill들과 그 점수입니다
+  (원본 MCE의 skill database).
+- **base agent**는 $\sigma_k$를 따릅니다. 현재 묶음의 학습 기록
+  $$\mathcal{D}_k=\{(x_i,\ a_i,\ y_i,\ r_i)\}$$
+  (질문, 정답 정보, 출력, 점수)을 읽고 context 파일과 context 함수의 코드를 고칩니다.
 - 반복이 끝날 때마다 새 버전을 validation에서 채점하고, 가장 좋은 반복을 test에 씁니다.
-- 우리는 공식 구현(c4b7a7c)을 **수정 없이** 쓰고, 우리 과제만 환경으로 등록합니다
-  (`experiments/latent_mce/mce_upstream`, `src/experiment/mce_cancer_env.py`).
+- 우리는 공식 구현(c4b7a7c)을 **수정 없이** 쓰고, task만 환경으로 등록합니다.
 
-### 4.3 답 모델의 내부 상태 읽기 (2026-10-29 개정: context를 붙인 상태를 반복마다 다시 읽음)
-- 반복 $k$의 training rollout마다, $M$에 **실제로 들어간 입력**(질문 $x$ + 그때의 context $g_k(x)$, 고정 system prompt)을 마지막 prompt 토큰까지 실행합니다. 판독을 위해 답을 다시 생성하지는 않습니다.
-- 깊이 $\ell \in \{36, 44, 52, 60\}$(전체 64층)의 block 출력 $h_\ell(x, g_k(x))$를 가져옵니다.
-- 고정된 activation verbalizer인 **Oracle lens** $O$가 각 상태를 짧은 글로 풉니다.
-  $$z_k(x) = \{\,O(h_\ell(x, g_k(x)))\,\}_{\ell}$$
-- context가 바뀌면 판독도 바뀝니다. 그래서 agent는 **자기가 쓴 context가 모델 내부를 어떻게 바꿨는지** 볼 수 있습니다. 같은 입력은 캐시에서 다시 씁니다(예: 첫 반복의 context 없는 입력).
-- meta agent용으로는 context 없는 입력의 판독 $z(x)=z_0(x)$를 질문마다 한 번 읽어 둡니다.
-- 이전 정의(10/29 오전까지): context 없는 입력을 질문마다 한 번만 읽어 모든 반복에 같은 $z(x)$를 넣었습니다. 이 정의로 낸 Cancer-Myth 결과는 다시 돌립니다.
+### 4.3 답 모델의 내부 상태 읽기
+- **무엇을 읽나.** 반복 $k$의 training rollout마다, 그 rollout에서 $M$에 **실제로 들어간 입력**
+  $u_i(x) \oplus g_{k,i}(x)$(그때의 context를 붙인 입력)를 마지막 prompt 토큰까지 실행합니다. 판독을 위해 답을 다시
+  생성하지는 않습니다. 호출이 여러 번인 task는 호출마다 따로 읽습니다.
+- **어디서 뽑나.** 마지막 prompt 토큰(첫 답 토큰을 만들기 직전)에서, 깊이 $\ell \in \{36, 44, 52, 60\}$(전체 64층)의
+  block 출력 $h_\ell$을 가져옵니다.
+- **어떻게 글로 바꾸나.** 고정된 activation verbalizer인 **Oracle lens** $O$가 각 상태를 짧은 글로 풉니다.
+  $$z_{k,i}(x) = \{\,O(h_\ell(u_i(x) \oplus g_{k,i}(x)))\,\}_{\ell}$$
+  상태를 $16000\cdot h/\lVert h\rVert$로 정규화해 고정 reader prompt의 한 자리에 넣고, temperature 0.8, top-p 0.95,
+  최대 128 토큰으로 생성합니다. 결과는 층마다 짧은 문장(bullet) 최대 4개이고, 이것을 판독이라 부릅니다.
+- context가 바뀌면 판독도 바뀝니다. 그래서 agent는 **자기가 쓴 context가 모델 내부를 어떻게 바꿨는지** 볼 수 있습니다.
+  같은 입력은 캐시에서 다시 씁니다.
+- meta agent용으로는 context 없는 입력의 판독 $z(x)=z_{0}(x)$를 training 질문마다 루프 전에 한 번 읽어 둡니다.
 
 **Oracle lens.**
 - Qwen3.6-27B 위의 LoRA reader로 학습한 도구입니다 (내부 프로젝트 `oracle-lens`, 공개 논문 없음).
   - AR(activation reconstructor): 글 → 그 글 앞의 activation을 예측합니다. 먼저 학습한 뒤 고정합니다.
-  - AO(activation oracle): activation → 글. 정규화한 상태($16000\cdot h/\lVert h\rVert$)를 reader prompt의 한 자리에 넣고 글을 생성합니다. AR을 보상으로 삼아 SFT와 RL(GRPO)로 학습합니다.
-- 우리는 학습된 reader(`olens_s3d_rl600`)를 고정해 씁니다. reader prompt와 생성 설정(T 0.8, top-p 0.95, 128 토큰)은 바꾸지 않습니다.
+  - AO(activation oracle): activation → 글. 정규화한 상태를 reader prompt의 한 자리에 넣고 글을 생성합니다. AR을
+    보상으로 삼아 SFT와 RL(GRPO)로 학습합니다.
+- 우리는 학습된 reader(`olens_s3d_rl600`)를 고정해 씁니다. reader prompt와 생성 설정은 바꾸지 않습니다.
 - 관련 공개 연구: Activation Oracles (Karvonen et al.), 개선판 (Bauer et al.), LatentQA, Patchscopes (§7).
 
 ### 4.4 Latent MCE
 - latent MCE는 **agent가 읽는 것**만 바꿉니다. base agent의 학습 기록은 이렇게 됩니다.
-  $$\mathcal{D}^{\text{lat}}_k=\{(x_i,\ \ell_i,\ c_i,\ y_i,\ r_i,\ z_k(x_i))\}$$
-  여기서 $z_k(x_i)$는 그 rollout이 쓴 context를 붙인 입력의 판독입니다(§4.3).
-- meta agent는 training 질문마다 context 없는 판독 $z(x)$를 받고(`meta_agent/train.jsonl`), 이전 반복의 기록(각 반복의 $z_k$ 포함)이 어디 있는지 안내도 받습니다.
-- interface는 $g(x)$ 그대로입니다. 내부 상태는 **최적화 피드백으로만** 씁니다. 그래서 학습된 context 함수와 추론 비용은 MCE와 같습니다.
+  $$\mathcal{D}^{\text{lat}}_k=\{(x_i,\ a_i,\ y_i,\ r_i,\ z_k(x_i))\}$$
+  여기서 $z_k(x_i)$는 그 rollout의 입력(context를 붙인 것) 판독입니다. 호출이 여러 번이면 호출별 판독을 모두 넣습니다.
+- meta agent는 training 질문마다 context 없는 판독 $z(x)$를 받고(`meta_agent/train.jsonl`), 이전 반복의 기록(각 반복의
+  $z_k$ 포함)이 어디 있는지 안내도 받습니다.
+- context 함수의 interface는 MCE 그대로입니다. 판독을 입력으로 받지 않습니다. 내부 상태는 **최적화 피드백으로만**
+  씁니다. 그래서 학습된 context 함수와 추론 비용은 MCE와 같습니다.
 - 출력은 모델이 *무엇을 답했는지* 보여 줍니다. 판독은 모델이 *답하기 전에 무엇을 표상했는지* 보여 줍니다.
-- 이것은 수정 방법이 다른 실패들을 agent가 가르도록 돕기 위한 설계입니다.
-  - 모델이 교정을 갖고 있지만 말하지 않음 → 문구
-  - 교정이 없음 → 지식
-  - 정상 질문을 이미 틀린 것으로 읽음 → 붙이는 범위를 좁힘
 
-```
-(1) 판독 만들기 (반복마다, training rollout마다; 답을 다시 생성하지 않음)
-    질문 + 고정 system prompt + 그 rollout의 context → Qwen3.6-27B → 마지막 prompt 토큰의 hidden state (block 36/44/52/60)
-                                                       → Oracle lens → 판독 (층마다 bullet 최대 4개)
-    + 루프 전 한 번: context 없는 입력의 판독 (meta agent용)
-(2) 피드백에 넣기
-    base agent: 학습 기록마다 질문·라벨·정답 교정·답·점수 + internal_reading (그 rollout의 context를 붙인 상태)
-    meta agent: meta_agent/train.jsonl의 질문마다 context 없는 internal_reading, 이전 반복 기록의 위치 안내
-(3) 나머지는 원본 MCE와 같음. get_context(question)도 같음 → test 때 내부 정보를 쓰지 않음
-```
+| 받는 쪽 | 무엇을 받나 | 파일 |
+|---|---|---|
+| base agent | rollout마다 `internal_reading` = 그 rollout이 쓴 context를 붙인 입력의 판독 (출력, 점수와 같은 줄) | `data/train.json` |
+| meta agent | training 질문마다 `internal_reading` = context 없는 입력의 판독, 이전 반복 기록의 위치 | `meta_agent/train.jsonl` |
+| 두 agent의 과제 설명 | 판독이 무엇이고 어디 있는지, interface는 판독을 받지 않는다는 안내 | task instruction |
+| context 함수, validation, test | 받지 않음 / 읽지 않음 | — |
 
 ### 4.5 설계 선택
-1. 판독은 **원문 그대로** 줍니다. 다른 모델이 요약하지 않으므로, 효과가 있다면 내부 신호와 agent 자신의 해석에서 나온 것입니다.
-2. **training rollout만** 읽습니다. validation과 test 질문은 읽지 않으므로 reader를 통한 정보 누출이 없습니다. agent는 validation의 점수 요약만 봅니다(원본 MCE).
-5. 판독은 **그 rollout이 실제로 쓴 context를 붙인 상태**에서 읽습니다. context 없는 상태는 반복마다 같아서, context를 고친 효과를 보여 주지 못하기 때문입니다. 그래서 루프 동안 lens 서버가 함께 돕니다.
-3. 두 arm은 루프, prompt, 예산(반복 수, 묶음 크기, rollout 수), 선택 규칙이 모두 같습니다. 차이는 $z$ 하나뿐입니다.
-4. agent가 판독을 어디서 찾는지는 과제 설명(task instruction)에 적습니다. 원본 MCE에서 과제 설명은 base와 meta prompt에 모두 들어갑니다.
+1. 판독은 **원문 그대로** 줍니다. 다른 모델이 요약하지 않으므로, 효과가 있다면 내부 신호와 agent 자신의 해석에서
+   나온 것입니다.
+2. **training rollout만** 읽습니다. validation과 test 질문은 읽지 않으므로 reader를 통한 정보 누출이 없습니다. agent는
+   validation의 점수 요약만 봅니다(원본 MCE).
+3. 판독은 **그 rollout이 실제로 쓴 context를 붙인 상태**에서 읽습니다. context 없는 상태는 반복마다 같아서, context를
+   고친 효과를 보여 주지 못하기 때문입니다. 그래서 루프 동안 lens 서버가 함께 돕니다.
+4. 두 arm(MCE, latent MCE)은 루프, prompt, 예산(반복 수, 묶음 크기, rollout 수), 선택 규칙이 모두 같습니다. 차이는
+   $z$ 하나뿐입니다.
+5. agent가 판독을 어디서 찾는지는 과제 설명(task instruction)에 적습니다. 원본 MCE에서 과제 설명은 base와 meta prompt에
+   모두 들어갑니다.
 
 ### 4.6 알고리즘 (latent MCE)
 ```
-모든 training x에 대해 z(x)를 미리 계산 (context 없음)           # Oracle lens, 한 번, meta agent용
+모든 training x에 대해 z(x)를 미리 계산 (context 없음)            # Oracle lens, 한 번, meta agent용
 for k = 1..K:
-    σ_k ← MetaAgent(𝓗_k, {x, ℓ, c, z(x)})                     # skill; 𝓗_k = 이전 skill과 점수
+    σ_k ← MetaAgent(𝓗_k, {x, a, z(x)})                          # skill; 𝓗_k = 이전 skill과 점수
     for 각 묶음 B ⊂ train:
-        B에서 g_k 실행 → 답 y, 점수 r
-        z_k(x) ← O(h(x, g_k(x)))  (x ∈ B)                       # 그 rollout의 context를 붙인 상태
-        (g, 𝒞) ← BaseAgent(σ_k, {(x, ℓ, c, y, r, z_k(x))}_B)   # context 파일과 g 수정
-    validation에서 g_k 채점
-validation 최고 (g, 𝒞)를 반환
+        B에서 현재 context 함수로 프로그램 실행 → 출력 y, 점수 r
+        z_k(x) ← { O(h(u_i(x) ⊕ g_{k,i}(x))) }_i  (x ∈ B)        # 호출마다, 그때의 context를 붙인 입력
+        (context 함수, 𝒞) ← BaseAgent(σ_k, {(x, a, y, r, z_k(x))}_B)
+    validation에서 채점
+validation 최고 (context 함수, 𝒞)를 반환
 ```
-- 구현: `src/experiment/lens_feedback.py` (`with_lens`, `LENS_STATE=context`; 어떤 원본 형식 MCE 환경이든 감쌈), 실행: `run_ours.sh` (`STEP=precompute` 한 번, 그다음 lens 서버를 켠 채 루프). 이전 정의의 구현은 `mce_cancer_env.py`의 `MCE_LATENT=lens`.
+- 구현: `src/experiment/lens_feedback.py` (`with_lens`, `LENS_STATE=context`; 어떤 원본 형식 MCE 환경이든 감쌈),
+  실행: `run_ours.sh` (`STEP=precompute` 한 번, 그다음 lens 서버를 켠 채 루프).
 - 그림 초안: `~/gepa_explainer/latent_mce_method_figure_2026-10-28.html` (서버).
-
-### 4.7 probe gate (latent MCE와 별개)
-- hidden state(층 20–60, 11개 층)에 층별 로지스틱 회귀를 학습하고 평균합니다. training 문항만 씁니다.
-- test 때 `p_fpq ≥ 0.5`인 질문에만 학습된 context를 붙입니다. 나머지는 Plain입니다.
-- latent MCE에는 들어가지 않습니다. Method에 넣을지, 분석으로 뺄지는 희재님과 정합니다.
 
 ---
 
 ## 5. 실험 설정 (요약, 자세한 값은 `METHOD_SETUP.md`)
 
-| 항목 | 값 |
-|---|---|
-| 답 모델 | Qwen3.6-27B, vLLM 0.18.1, greedy, thinking off, 최대 2048 토큰 |
-| context 위치 | system prompt 끝 `"Instructional context: …"` (user 메시지에 넣으면 NFP가 약 20점 떨어짐, E31) |
-| 채점 | gpt-6-luna, Well rubric(라벨별), 1–5점, 통과 ≥ 4, 블라인드·캐시 |
-| agent | gpt-6-luna, `codex` CLI, reasoning effort medium |
-| MCE 설정 | 5 반복, training 묶음 50, training 100(50/50), validation 96(48/48), fold 3개 |
-| 비교 | Plain, GEPA, MCE, latent MCE (+ 분석: probe gate) |
-| 하드웨어 | RTX A6000 48 GB × 8. 모델 서버 하나에 GPU 2장 |
+| 항목 | Cancer-Myth / Syn-QA2 | MedCalc-Bench | HotpotQA / HoVer |
+|---|---|---|---|
+| 답 모델 | Qwen3.6-27B, vLLM 0.18.1, greedy, thinking off, 최대 2048 토큰 | Qwen3.6-27B, thinking on, temperature 0.6, top-p 0.95, context 8000 | Qwen3.6-27B, greedy, thinking off (DSPy, max_tokens 16384) |
+| context 위치 | system prompt 끝 `"Instructional context: …"` | system prompt 끝 `"Context: …"` | 모듈마다 question / claim 칸 끝 |
+| 채점 | gpt-6-luna, Well rubric(라벨별), 1–5점, 통과 ≥ 4 | gpt-6-luna 단계별 채점 (test는 regex도) | EM / 근거 문서 전부 찾음 (규칙 기반) |
+| MCE 설정 | 5 반복, 묶음 50, training 100(50/50), validation 96(48/48), fold 3개 | 5 반복, 묶음 50, training 220, validation 110, test 1,048 | 5 반복, 묶음 50, training 150, validation 100, test 300 |
+| agent | gpt-6-luna, `codex` CLI, reasoning effort medium (모든 task 공통) | | |
+| 비교 | Plain, CoT, GEPA, MCE, latent MCE (모든 task 공통) | | |
 
 ---
 
@@ -246,7 +249,7 @@ arXiv 번호는 프로젝트 문서에서 확인한 것입니다. "(확인 필�
 | 무엇 | 어디 |
 |---|---|
 | 이 저장소 (논문용 코드) | github.com/0914eagle/latent-mce-paper |
-| 전체 프로젝트 저장소 | github.com/JakeFRCSE/LatentGEPA (비공개; 이 변경은 branch `latent-mce-feedback`) |
+| 전체 프로젝트 저장소 | github.com/JakeFRCSE/LatentGEPA (비공개; main) |
 | 결과 데이터 | HF 비공개 dataset `latentgpea/latent-feedback-cells-data` |
 | 설명 페이지 (그림, 표 계획, 결과 페이지) | 서버 `~/gepa_explainer/` |
 | Overleaf | 희재님께 받기 |
