@@ -45,7 +45,27 @@ question ─► get_context(...) ─► "Instructional context" appended to the 
 | `experiments/latent_mce/src/experiment/e27_loop.py`, `run_e27.sh`, `run_e21.sh` | our earlier MCE-style loop with the probe gate inside (E27) and its base (E21) |
 | `experiments/latent_mce/src/experiment/e29_gepa_baseline.py` | Plain and GEPA on the test split |
 | `experiments/latent_mce/src/experiment/v4_eval.py` | answer generation and the blind, cached Luna Well judge |
+| `experiments/latent_mce/src/experiment/lens_fve.py` | Oracle-lens FVE table on six datasets (fixed reader, blocks 36/44/52/60, joint bullet-FVE) |
+| `experiments/lens_finetune/` | Oracle-lens fine-tuning (RAFT-1 style SFT of the lens adapter on AR-scored readings) and its FVE / loss / example reports; see its `README.md` |
 | `data/fpq/` | Cancer-Myth questions and the frozen folds (`splits.json`, `cancer_myth_balanced_splits.json`) |
+
+### Lens experiments (FVE and fine-tuning)
+
+FVE = fraction of the whitened pre-answer state that the lens reading explains (higher is better), mean of blocks
+36/44/52/60, test items. Base = the fixed Oracle lens; fine-tuned = after `experiments/lens_finetune` (checkpoint
+picked by validation FVE).
+
+| Dataset | Base FVE | Fine-tuned FVE |
+|---|---|---|
+| HotpotQA | 0.499 | 0.504 |
+| HoVer | 0.477 | 0.483 |
+| Cancer-Myth | 0.408 | 0.410 |
+| SynQA2 | 0.394 | 0.403 |
+| MedCalc-Bench | 0.197 | 0.223 |
+
+The gain is at most +0.026 FVE; the AR scorer used for the SFT targets limits it (olens_draft `docs/rl.md`).
+The MedCalc question list (`questions_other.py medcalc --native`) also needs `common/medrac` from the project
+repository, which is not in this subset.
 
 ## Setup
 
