@@ -20,9 +20,12 @@ answer token for the task input without any context:
   - in the training rows the meta agent reads: run MCE on the `<train>_lens.jsonl` file `precompute` writes (the
     training rows + "internal_reading"), as the Cancer-Myth run does with fold<k>_train_lens.jsonl;
   - the task instruction describes it (training data only; no internal input at test time).
-`lens_input(sample) -> (system, user)` is the chat input whose state is read (the dataset's own prompt, no context):
-  hotpotqa / hover (mce_repro_qwen3 mce_envs): ("", the question / claim), the first module's question as E42 read it
-  medcalc_cot (mce_medcalc_cot env):            the paper's zero-shot CoT system and user messages
+`lens_input(sample, trajectory) -> {name: (system, user)}` gives the chat input(s) of the rollout, each read once:
+  cancer_myth (mce_cancer_env):      Plain + "Instructional context" + the rollout's context, user = the question
+  medcalc_cot (mce_medcalc_cot env): the paper's CoT system + "Context:" + the rollout's context, its user message
+  hotpotqa / hover (mce_envs):       every one of the four LM calls, on the chat input DSPy sent for it (each module's
+                                     own context appended to its question / claim field) -> one reading per module
+  without a trajectory (precompute, the meta agent's rows): the input without context.
 Readings are made once per training question (`precompute`, needs the lens server), cached in the latent_mce lens
 cache (keyed by sha256(system + "\\x1f" + user)[:32], shared with mce_cancer_env and lens_fve), and looked up there in
 the loop, so no lens server runs during MCE.
@@ -123,9 +126,17 @@ def used_context(trajectory):
     return ""
 
 
+def module_calls(trajectory):
+    """The module calls of a multi-module rollout (mce_envs: the evaluate step's intermediate.module_calls)."""
+    ev = next((s for s in trajectory if s.get("step") == "evaluate"), {})
+    return (ev.get("intermediate") or {}).get("module_calls") or []
+
+
 def with_lens(Env, lens_input, name=None):
     """The latent-MCE variant of an original-format MCE environment class (feedback only).
-    lens_input(sample, context) -> (system, user): the chat input whose pre-answer state is read."""
+    lens_input(sample, trajectory) -> {name: (system, user)}: the chat input(s) whose pre-answer state is read; with
+    trajectory None, the input without context (precompute). One model call -> one reading; a multi-module program
+    (HotpotQA, HoVer: four calls) -> one reading per call, each of the input that call actually received."""
     class LensEnv(Env):
         def get_task_instruction(self):
             return super().get_task_instruction() + (INSTRUCTION_CONTEXT if LENS_STATE == "context" else INSTRUCTION)
@@ -139,10 +150,11 @@ def with_lens(Env, lens_input, name=None):
         async def aevaluate(self, sample, interfaces, llm_client=None, context_dir=None, log_dir=None):
             res = await super().aevaluate(sample, interfaces, llm_client, context_dir, log_dir)
             if sample.extras.get("_lens_train"):
-                ctx = used_context(res.trajectory) if LENS_STATE == "context" else ""
                 import asyncio
-                r = await asyncio.to_thread(read_live, *lens_input(sample, ctx))
-                res.trajectory.append({"step": "internal_reading", "context_chars": len(ctx), "reading": r})
+                inputs = lens_input(sample, res.trajectory if LENS_STATE == "context" else None)
+                reads = await asyncio.gather(*[asyncio.to_thread(read_live, s, u) for s, u in inputs.values()])
+                r = dict(zip(inputs, reads))
+                res.trajectory.append({"step": "internal_reading", "reading": r["answer"] if list(r) == ["answer"] else r})
             return res
 
         def format_result_for_training(self, item):
@@ -163,16 +175,23 @@ def lens_inputs():
     try:
         from experiments.latent_mce.src.experiment import mce_cancer_env as C
 
-        def cancer(sample, ctx=""):  # Plain + "\n\nInstructional context:\n" + context (mce_cancer_env)
-            return C.PLAIN + (C.CONTEXT_FORMAT.format(context=ctx) if ctx else ""), sample.question
+        def cancer(sample, traj=None):  # Plain + "\n\nInstructional context:\n" + context (mce_cancer_env)
+            ctx = used_context(traj) if traj else ""
+            return {"answer": (C.PLAIN + (C.CONTEXT_FORMAT.format(context=ctx) if ctx else ""), sample.question)}
         out["cancer_myth"] = (C.CancerMythEnvironment, cancer)
     except ImportError:
         pass
     try:
         from experiments.mce_repro_qwen3.src.experiment.mce_envs import HotpotQAEnvironment, HoverEnvironment
 
-        def multihop(sample, ctx=""):  # the first module's question field with its context appended (mce_envs.lm)
-            return "", sample.question + (f"\n\nContext:\n{ctx}" if ctx else "")
+        def multihop(sample, traj=None):
+            """Every LM call of the rollout, read on the chat input DSPy sent for it (program_server returns it; the
+            module's own context is appended to its question / claim field). Without a trajectory (precompute, the meta
+            agent's rows): the question alone as the user message, as E42 and the lens FVE table read it."""
+            if traj is None:
+                return {"answer": ("", sample.question)}
+            return {c["module"]: (c["messages"][0]["content"], c["messages"][-1]["content"])
+                    for c in module_calls(traj) if c.get("messages")}
         out["hotpotqa"], out["hover"] = (HotpotQAEnvironment, multihop), (HoverEnvironment, multihop)
     except ImportError:
         pass
@@ -180,10 +199,11 @@ def lens_inputs():
         from experiments.mce_medcalc_cot.src.experiment.env import MedCalcCoTEnvironment
         from common.medrac.plain import cot_prompts
 
-        def medcalc(sample, ctx=""):  # the CoT call: system + "\n\nContext:\n" + context (mce_medcalc_cot env)
+        def medcalc(sample, traj=None):  # the CoT call: system + "\n\nContext:\n" + context (mce_medcalc_cot env)
+            ctx = used_context(traj) if traj else ""
             r = sample.extras["row"]
             system, user = cot_prompts([str(r["Calculator ID"])], [r["Patient Note"]], [r["Question"]])[0]
-            return (system + f"\n\nContext:\n{ctx}" if ctx else system), user
+            return {"answer": ((system + f"\n\nContext:\n{ctx}" if ctx else system), user)}
         out["medcalc_cot"] = (MedCalcCoTEnvironment, medcalc)
     except ImportError:
         pass
@@ -198,7 +218,7 @@ def precompute(dataset, train_path):
     samples = env.load_samples(train_path, limit=0)
     lines = Path(train_path).read_text().splitlines()
     assert len(samples) == len(lines), "load_samples must keep every row in file order"
-    pairs = [inp(s, "") for s in samples]
+    pairs = [inp(s, None)["answer"] for s in samples]
     todo = sorted({key(*p): p for p in pairs if reading(*p) is None}.items())
     urls = os.environ["LENS_URLS"].split(",")
     print(f"{len(pairs)} rows, {len(todo)} to read", flush=True)
