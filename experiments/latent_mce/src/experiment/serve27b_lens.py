@@ -26,12 +26,12 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-sys.path.insert(0, '/data2/heejae/external/olens_draft/src')
+sys.path.insert(0, os.environ.get('OLENS_SRC', '/data2/heejae/external/olens_draft/src'))  # other servers: env vars
 from oracle_lens.pipeline.verbalizer import renderer_for  # noqa: E402
 
 PORT, CACHE = int(sys.argv[1]), Path(sys.argv[2])
-MODEL = '/data4/heedong/repos/llm/params/Qwen3.6-27B'
-ADAPTER = '/data2/heejae/oracle_lens/olens_and_ar/olens_s3d_rl600'
+MODEL = os.environ.get('QWEN36_PATH', '/data4/heedong/repos/llm/params/Qwen3.6-27B')
+ADAPTER = os.environ.get('OLENS_ADAPTER', '/data2/heejae/oracle_lens/olens_and_ar/olens_s3d_rl600')  # the fixed reader (a tuned adapter only as an ablation)
 READ_LAYERS = [int(x) for x in os.environ.get('READ_LAYERS', '52,60').split(',')]   # layers read by the oracle
 BATCH, WINDOW, MAX_NEW, ALPHA = 24, 0.3, 2048, 16000.0
 CACHE.mkdir(parents=True, exist_ok=True)
@@ -59,7 +59,8 @@ answers = Cache(CACHE / 'answers.jsonl')
 plans = Cache(CACHE / ('plans.jsonl' if READ_LAYERS == [52, 60] else 'plans_L' + '_'.join(map(str, READ_LAYERS)) + '.jsonl'))
 tok = AutoTokenizer.from_pretrained(MODEL); tok.padding_side = 'left'
 base = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.bfloat16, device_map='auto',
-                                            max_memory={0: '40GiB', 1: '44GiB'})
+                                            max_memory=({int(k): v for k, v in (x.split(':') for x in os.environ['LENS_MAX_MEMORY'].split(','))}
+                                                        if os.environ.get('LENS_MAX_MEMORY') else {0: '40GiB', 1: '44GiB'}))
 base.eval(); base.requires_grad_(False)
 from peft import PeftModel  # noqa: E402
 pm = PeftModel.from_pretrained(base, ADAPTER); pm.eval()

@@ -107,12 +107,14 @@
 - 우리는 공식 구현(c4b7a7c)을 **수정 없이** 쓰고, 우리 과제만 환경으로 등록합니다
   (`experiments/latent_mce/mce_upstream`, `src/experiment/mce_cancer_env.py`).
 
-### 4.3 답 모델의 내부 상태 읽기
-- training 질문 $x$마다 $M$을 Plain prompt(context 없음)로 마지막 prompt 토큰까지 실행합니다. 답은 생성하지 않습니다.
-- 깊이 $\ell \in \{36, 44, 52, 60\}$(전체 64층)의 block 출력 $h_\ell(x)$를 가져옵니다.
+### 4.3 답 모델의 내부 상태 읽기 (2026-10-29 개정: context를 붙인 상태를 반복마다 다시 읽음)
+- 반복 $k$의 training rollout마다, $M$에 **실제로 들어간 입력**(질문 $x$ + 그때의 context $g_k(x)$, 고정 system prompt)을 마지막 prompt 토큰까지 실행합니다. 판독을 위해 답을 다시 생성하지는 않습니다.
+- 깊이 $\ell \in \{36, 44, 52, 60\}$(전체 64층)의 block 출력 $h_\ell(x, g_k(x))$를 가져옵니다.
 - 고정된 activation verbalizer인 **Oracle lens** $O$가 각 상태를 짧은 글로 풉니다.
-  $$z(x) = \{\,O(h_\ell(x))\,\}_{\ell}$$
-- 질문마다 한 번만 읽으므로 $z(x)$는 모든 run에서 같습니다.
+  $$z_k(x) = \{\,O(h_\ell(x, g_k(x)))\,\}_{\ell}$$
+- context가 바뀌면 판독도 바뀝니다. 그래서 agent는 **자기가 쓴 context가 모델 내부를 어떻게 바꿨는지** 볼 수 있습니다. 같은 입력은 캐시에서 다시 씁니다(예: 첫 반복의 context 없는 입력).
+- meta agent용으로는 context 없는 입력의 판독 $z(x)=z_0(x)$를 질문마다 한 번 읽어 둡니다.
+- 이전 정의(10/29 오전까지): context 없는 입력을 질문마다 한 번만 읽어 모든 반복에 같은 $z(x)$를 넣었습니다. 이 정의로 낸 Cancer-Myth 결과는 다시 돌립니다.
 
 **Oracle lens.**
 - Qwen3.6-27B 위의 LoRA reader로 학습한 도구입니다 (내부 프로젝트 `oracle-lens`, 공개 논문 없음).
@@ -123,8 +125,9 @@
 
 ### 4.4 Latent MCE
 - latent MCE는 **agent가 읽는 것**만 바꿉니다. base agent의 학습 기록은 이렇게 됩니다.
-  $$\mathcal{D}^{\text{lat}}_k=\{(x_i,\ \ell_i,\ c_i,\ y_i,\ r_i,\ z(x_i))\}$$
-- meta agent는 training 질문마다 $z(x)$를 받고(`meta_agent/train.jsonl`), 이전 반복의 기록이 어디 있는지 안내도 받습니다.
+  $$\mathcal{D}^{\text{lat}}_k=\{(x_i,\ \ell_i,\ c_i,\ y_i,\ r_i,\ z_k(x_i))\}$$
+  여기서 $z_k(x_i)$는 그 rollout이 쓴 context를 붙인 입력의 판독입니다(§4.3).
+- meta agent는 training 질문마다 context 없는 판독 $z(x)$를 받고(`meta_agent/train.jsonl`), 이전 반복의 기록(각 반복의 $z_k$ 포함)이 어디 있는지 안내도 받습니다.
 - interface는 $g(x)$ 그대로입니다. 내부 상태는 **최적화 피드백으로만** 씁니다. 그래서 학습된 context 함수와 추론 비용은 MCE와 같습니다.
 - 출력은 모델이 *무엇을 답했는지* 보여 줍니다. 판독은 모델이 *답하기 전에 무엇을 표상했는지* 보여 줍니다.
 - 이것은 수정 방법이 다른 실패들을 agent가 가르도록 돕기 위한 설계입니다.
@@ -133,33 +136,36 @@
   - 정상 질문을 이미 틀린 것으로 읽음 → 붙이는 범위를 좁힘
 
 ```
-(1) 판독 만들기 (training 질문마다 한 번, 답 생성 없음)
-    질문 + 고정 system prompt → Qwen3.6-27B → 마지막 prompt 토큰의 hidden state (block 36/44/52/60)
-                                            → Oracle lens → 판독 4개 (짧은 글)
+(1) 판독 만들기 (반복마다, training rollout마다; 답을 다시 생성하지 않음)
+    질문 + 고정 system prompt + 그 rollout의 context → Qwen3.6-27B → 마지막 prompt 토큰의 hidden state (block 36/44/52/60)
+                                                       → Oracle lens → 판독 (층마다 bullet 최대 4개)
+    + 루프 전 한 번: context 없는 입력의 판독 (meta agent용)
 (2) 피드백에 넣기
-    base agent: 학습 기록마다 질문·라벨·정답 교정·답·점수 + internal_reading
-    meta agent: meta_agent/train.jsonl의 질문마다 internal_reading, 이전 반복 기록의 위치 안내
+    base agent: 학습 기록마다 질문·라벨·정답 교정·답·점수 + internal_reading (그 rollout의 context를 붙인 상태)
+    meta agent: meta_agent/train.jsonl의 질문마다 context 없는 internal_reading, 이전 반복 기록의 위치 안내
 (3) 나머지는 원본 MCE와 같음. get_context(question)도 같음 → test 때 내부 정보를 쓰지 않음
 ```
 
 ### 4.5 설계 선택
 1. 판독은 **원문 그대로** 줍니다. 다른 모델이 요약하지 않으므로, 효과가 있다면 내부 신호와 agent 자신의 해석에서 나온 것입니다.
-2. **training 질문만** 읽습니다. validation과 test 질문은 읽지 않으므로 reader를 통한 정보 누출이 없습니다.
+2. **training rollout만** 읽습니다. validation과 test 질문은 읽지 않으므로 reader를 통한 정보 누출이 없습니다. agent는 validation의 점수 요약만 봅니다(원본 MCE).
+5. 판독은 **그 rollout이 실제로 쓴 context를 붙인 상태**에서 읽습니다. context 없는 상태는 반복마다 같아서, context를 고친 효과를 보여 주지 못하기 때문입니다. 그래서 루프 동안 lens 서버가 함께 돕니다.
 3. 두 arm은 루프, prompt, 예산(반복 수, 묶음 크기, rollout 수), 선택 규칙이 모두 같습니다. 차이는 $z$ 하나뿐입니다.
 4. agent가 판독을 어디서 찾는지는 과제 설명(task instruction)에 적습니다. 원본 MCE에서 과제 설명은 base와 meta prompt에 모두 들어갑니다.
 
 ### 4.6 알고리즘 (latent MCE)
 ```
-모든 training x에 대해 z(x)를 미리 계산                        # Oracle lens, 한 번
+모든 training x에 대해 z(x)를 미리 계산 (context 없음)           # Oracle lens, 한 번, meta agent용
 for k = 1..K:
     σ_k ← MetaAgent(𝓗_k, {x, ℓ, c, z(x)})                     # skill; 𝓗_k = 이전 skill과 점수
     for 각 묶음 B ⊂ train:
         B에서 g_k 실행 → 답 y, 점수 r
-        (g, 𝒞) ← BaseAgent(σ_k, {(x, ℓ, c, y, r, z(x))}_B)     # context 파일과 g 수정
+        z_k(x) ← O(h(x, g_k(x)))  (x ∈ B)                       # 그 rollout의 context를 붙인 상태
+        (g, 𝒞) ← BaseAgent(σ_k, {(x, ℓ, c, y, r, z_k(x))}_B)   # context 파일과 g 수정
     validation에서 g_k 채점
 validation 최고 (g, 𝒞)를 반환
 ```
-- 구현: `src/experiment/mce_cancer_env.py` (`MCE_LATENT=lens`), 판독 사전 계산과 실행: `run_mce_cancer.sh`.
+- 구현: `src/experiment/lens_feedback.py` (`with_lens`, `LENS_STATE=context`; 어떤 원본 형식 MCE 환경이든 감쌈), 실행: `run_ours.sh` (`STEP=precompute` 한 번, 그다음 lens 서버를 켠 채 루프). 이전 정의의 구현은 `mce_cancer_env.py`의 `MCE_LATENT=lens`.
 - 그림 초안: `~/gepa_explainer/latent_mce_method_figure_2026-10-28.html` (서버).
 
 ### 4.7 probe gate (latent MCE와 별개)

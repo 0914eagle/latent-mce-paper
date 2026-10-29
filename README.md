@@ -22,8 +22,9 @@ question ─► get_context(...) ─► "Instructional context" appended to the 
               └──────── written and revised by the MCE agents from training rollouts ◄────────────────────────┘
 
   MCE           get_context(question)                 agents see question, label, reference, answer, rating
-  latent MCE    get_context(question)                 + the Oracle-lens reading of the pre-answer state, as feedback only:
-                                                      in the base agent's records and the meta agent's meta_agent/train.jsonl
+  latent MCE    get_context(question)                 + the Oracle-lens reading of the pre-answer state WITH the rollout's
+                                                      context (re-read every iteration), as feedback only: in the base agent's
+                                                      records; the meta agent's meta_agent/train.jsonl has the no-context reading
   baselines     Plain, GEPA (optimized system prompt)
   (separate, E25-E27) probe gate: attach a learned context only when the hidden-state probe p_fpq >= 0.5
 ```
@@ -81,8 +82,13 @@ CUDA_VISIBLE_DEVICES=4,5 READ_LAYERS=36,44,52,60 python experiments/latent_mce/s
 Main experiment (original MCE vs latent MCE, folds 0–2):
 ```bash
 .venv-fpq/bin/python -m experiments.latent_mce.src.prepare.mce_cancer_splits     # balanced folds -> results/data/mce_cancer
-LENS_URL=http://127.0.0.1:8796/run experiments/latent_mce/run_mce_cancer.sh lens # read each training question once, write fold<k>_train_lens.jsonl
-GEN_PORTS=8802,8803,8804 experiments/latent_mce/run_mce_cancer.sh                # both arms, 3 folds, then test
+GEN_PORTS=8802,8803,8804 ARMS=none experiments/latent_mce/run_mce_cancer.sh      # MCE row, 3 folds, then test
+# latent MCE (Ours): the lens server stays up during the loop (readings of each rollout with its context)
+D=experiments/latent_mce/results/data/mce_cancer; for k in 0 1 2; do
+  DATASET=cancer_myth TRAIN=$D/fold${k}_train.jsonl LENS_URLS=http://127.0.0.1:8796/run STEP=precompute experiments/latent_mce/run_ours.sh
+  DATASET=cancer_myth TRAIN=$D/fold${k}_train.jsonl VAL=$D/fold${k}_val.jsonl TEST=$D/fold${k}_test.jsonl TL=100 VL=96 \
+    GEN_PORT=8802 LENS_URLS=http://127.0.0.1:8796/run TAG=fold$k experiments/latent_mce/run_ours.sh &
+done; wait
 ```
 Probe gate and baselines (need the results data):
 ```bash

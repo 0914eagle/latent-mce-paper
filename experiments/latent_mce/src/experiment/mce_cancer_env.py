@@ -51,6 +51,7 @@ BRIDGE = WellBridge(CONF)
 DATA = results_dir("latent_mce") / "data" / "mce_cancer"
 LOCK = threading.Lock()
 CACHE = {"judge": {}, "lens": {}}
+JUDGE_SLOTS = threading.Semaphore(int(os.environ.get("JUDGE_CONCURRENCY", "30")))  # Luna calls at once per process
 
 
 def _load(kind):
@@ -80,7 +81,8 @@ def judge(qid, answer):
         sys_msg, user = B.envelope(BRIDGE(op="judge", row=ROWS[qid], answer=answer), exact=True)
         for attempt in range(8):
             try:
-                rating = parse_rating(Q._openai(LUNA, sys_msg, user)[0])
+                with JUDGE_SLOTS:
+                    rating = parse_rating(Q._openai(LUNA, sys_msg, user)[0])
                 if rating is not None:
                     return rating
             except ValueError:
@@ -156,7 +158,7 @@ IMPORTANT: In your interface implementation, use ABSOLUTE paths to access contex
     def format_result_for_training(self, item: Dict[str, Any]) -> Dict[str, Any]:
         sample, ev = item.get("sample", {}), item.get("evaluation", {})
         last = next((s for s in ev.get("trajectory", []) if s.get("step") == "evaluate"), {})
-        rec = {"id": sample.get("id"), "question": sample.get("question"), "label": sample.get("extras", {}).get("label"),
+        rec = {"id": sample.get("id"), "question": sample.get("question"), "label": sample.get("label"),  # Sample.to_dict() flattens the extras
                "ground_truth": sample.get("ground_truth"), "llm_prediction": last.get("prediction"), "rating": last.get("rating"),
                "is_correct": ev.get("metrics", {}).get("accuracy", 0.0) == 1.0}
         if LATENT == "lens":

@@ -42,12 +42,15 @@ between experiments, the experiment is named (E-numbers refer to `experiments/la
 - **Arms (differ only in the feedback the agents read; both implement `get_context(question) -> str`, so no internal
   signal is used at test time):**
   - *MCE*: training records: question, label, reference correction (FPQ), answer, rating, pass.
-  - *latent MCE*: the same records + `internal_reading` = the Oracle-lens reading of the question under the Plain prompt
-    (`{"36": text, "44": text, "52": text, "60": text}`). The base agent sees it in each iteration's training records
-    (with the answer and rating); the meta agent sees it per training question in `meta_agent/train.jsonl` (the arm's
-    training file `fold<k>_train_lens.jsonl`) and can open earlier iterations' records. The task instruction tells both
-    agents where the readings are. Each training question is read once before the runs; validation and test questions
-    are never read.
+  - *latent MCE* (revised 2026-10-29): the same records + `internal_reading` = the Oracle-lens reading
+    (`{"36": text, "44": text, "52": text, "60": text}`) of **that rollout's input with the context it used** (Plain
+    system prompt + "Instructional context" + the `get_context` output), read live in every iteration on the lens
+    server (`src/experiment/lens_feedback.py`, `LENS_STATE=context`; launcher `run_ours.sh`). The base agent sees it in
+    each iteration's training records (with the answer and rating); the meta agent sees the reading of the input
+    without context per training question in `meta_agent/train.jsonl` (`fold<k>_train_lens.jsonl`, read once by
+    `STEP=precompute`) and can open earlier iterations' records. The task instruction tells both agents where the
+    readings are. Validation and test rollouts are never read. (Earlier definition: one no-context reading per training
+    question, reused in every iteration; its Cancer-Myth result is to be rerun.)
 - No judge explanation is given to the agents in either arm.
 
 ### 4.2 Probe gate on learned contexts (E25–E27)
