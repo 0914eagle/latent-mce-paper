@@ -81,9 +81,16 @@ counts as wrong. MCE (other server) not added yet.
 |---|---|---|---|---|---|---|---|---|
 | CoT | 75.9 | 63.1 | 82.0 | 82.3 | 97.1 | 74.0 | 82.2 | 64.8 |
 | MCE, original code, context appended (`experiments/mce_medcalc_cot`), iter1 (val 72.7) | 75.4 | 65.1 | 84.4 | 81.1 | 95.0 | 74.6 | 83.4 | 61.4 |
-| Ours | running (val per iteration 63.6, 70.0, 71.8, 73.6) | | | | | | | |
+| Ours, fine-tuned MedCalc lens, iter4 (val 73.6) | 76.1 | 67.0 | 90.3 | 82.3 | 95.6 | 73.4 | 84.1 | 62.2 |
 
-- MCE val per iteration: 72.7, 68.2, 71.8, 67.3, 71.8 (110 rows, SE about 4.3); no gain after iteration 1.
+- MCE val per iteration: 72.7, 68.2, 71.8, 67.3, 71.8 (110 rows, SE about 4.3); no gain after iteration 1. Ours:
+  63.6, 70.0, 71.8, 73.6, 67.3.
+- Ours vs MCE, paired Judge Final: all +1.9 (88 vs 68 discordant, McNemar p 0.13); calc 75.9 vs 78.1 (27 vs 42,
+  p 0.09); **rule 51.4 vs 42.3 (61 vs 26, p < 0.001)**. Regex: all 76.1 vs 75.4 (45 vs 37, p 0.44).
+- Why rule improved: Ours' final `get_context` routes by the calculator named in the question (about 40 routes) to
+  calculator cards with point tables (Centor, FeverPAIN, Wells, CHA2DS2-VASc, Caprini, APACHE II, ...; 222 lines),
+  where MCE's returns one general text. No context file or interface uses the readings; the meta agent's skills
+  mention them only as "weak diagnostic evidence". The routing is the agents' choice, not a lens effect we can show.
 - Paired against CoT (regex): calc 667 rows +1.2 (17 vs 9 discordant, McNemar p 0.17); rule 381 rows −3.4 (23 vs 36,
   p 0.12). Judge Final by type: calc 78.1 vs 75.0, rule 42.3 vs 42.3.
 - The MCE context is one general text of about 6,000 characters for every row; rule calculators get one line each
