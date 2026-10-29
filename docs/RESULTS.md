@@ -1,4 +1,4 @@
-# Results so far (as of 2026-10-27)
+# Results so far (as of 2026-10-29)
 
 Cancer-Myth, Qwen3.6-27B answering model (vLLM 0.18.1, greedy, thinking off), gpt-6-luna Well judge (pass ≥ 4),
 macro = (FPQ pass % + NFP pass %) / 2. Fold 0 unless noted. Every entry points to its pre-registration and result note
@@ -57,3 +57,44 @@ nothing beyond the answer; the meta agent cited specific readings but turned the
 - The MCE loop here uses 3 iterations over 50 new training questions each; the MCE paper runs 5 epochs over the whole
   training set, and its GEPA baseline gets at least MCE's rollout budget. Our GEPA (500 calls) has less than our MCE
   (about 730 rollouts per run).
+
+## 5. Table runs on the other datasets (2026-10-29)
+
+Qwen3.6-27B answering model, original MCE loop (c4b7a7c), codex exec agents. Ours = latent MCE with the fine-tuned
+Oracle lens (`experiments/lens_finetune`), readings in the training records only. One run per row.
+
+**HotpotQA** (GEPA artifact test 300; `experiments/mce_repro_qwen3/src/analysis/hotpot_metrics.py` in LatentGEPA)
+
+| Method | EM | F1 | Both | Recall | EM\|both |
+|---|---|---|---|---|---|
+| CoT | 65.0 | | | | |
+| GEPA (stopped at 918 / 2000 calls) | 73.3 | | | | |
+| Ours, iter4 (val 76.0) | 73.67 | 80.55 | 73.0 | 83.5 | 84.02 |
+
+EM = SQuAD-normalized exact match; Both = both gold supporting titles among the two retrievals' passages; Recall = mean
+fraction of gold titles retrieved; EM|both = EM over the Both questions (219). One Ours row lost its program call and
+counts as wrong. MCE (other server) not added yet.
+
+**MedCalc-Bench, CoT start** (test 1048; Luna step-wise judge; regex as MedRaC)
+
+| Method | Regex | Final | Form. | Extr. | Calc. | Ans. | Regex calc | Regex rule |
+|---|---|---|---|---|---|---|---|---|
+| CoT | 75.9 | 63.1 | 82.0 | 82.3 | 97.1 | 74.0 | 82.2 | 64.8 |
+| MCE, original code, context appended (`experiments/mce_medcalc_cot`), iter1 (val 72.7) | 75.4 | 65.1 | 84.4 | 81.1 | 95.0 | 74.6 | 83.4 | 61.4 |
+| Ours | running (val per iteration 63.6, 70.0, 71.8, 73.6) | | | | | | | |
+
+- MCE val per iteration: 72.7, 68.2, 71.8, 67.3, 71.8 (110 rows, SE about 4.3); no gain after iteration 1.
+- Paired against CoT (regex): calc 667 rows +1.2 (17 vs 9 discordant, McNemar p 0.17); rule 381 rows −3.4 (23 vs 36,
+  p 0.12). Judge Final by type: calc 78.1 vs 75.0, rule 42.3 vs 42.3.
+- The MCE context is one general text of about 6,000 characters for every row; rule calculators get one line each
+  (e.g. APACHE II), not their point tables. Wrong rule answers count unmentioned criteria as absent, as the benchmark
+  does; they miss or mis-score criteria (e.g. Wells DVT −2 item).
+
+**Do the agents use the readings?** (Ours HotpotQA and MedCalc workspaces) The readings are in the training records
+(`internal_reading`, blocks 36/44/52/60) and the agents open them (36 / 30 commands), but no context file, no
+`get_context` interface and no skill mentions them. The meta agents call them "weak diagnostic evidence" / "noisy";
+both runs had the default caveat in the task text (`LENS_NOTE` unset). At test, `get_context(question)` has no
+reading, so a reading can change only how rules are written, not which rule a question gets.
+
+**SynQA2** (other server; `synqa2-mce` branch of LatentGEPA): MCE 72.8 vs Plain 79.5 macro; FPQ 82.3 → 91.3, TPQ
+76.7 → 54.3; iteration 1 best in both runs.
